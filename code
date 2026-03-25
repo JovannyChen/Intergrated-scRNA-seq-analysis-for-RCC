@@ -1,0 +1,677 @@
+setwd("/media/zw/Cjx/SRSF")
+
+assays<-dir("/media/zw/Cjx/HTN/ccRCC/raw/")
+dir<-paste0("/media/zw/Cjx/HTN/ccRCC/raw/",assays)
+samples_name=c( "C1" ,    "C2"   ,       "C3"   ,       "C4" , "C5"   ,       "C6"    ,      "C7"   ,       "C8",          "C9"  ,     "C10_Pre"  ,   "C11_Pre" )
+library(Seurat)
+library(harmony)
+library(patchwork)
+library(tidyverse)
+
+scRNAlist <- list()
+for(i in 1:length(dir)){
+  counts <- Read10X(data.dir = dir[i])
+  #不设置min.cells过滤基因会导致CellCycleScoring报错：
+  #Insufficient data values to produce 24 bins.  
+  scRNAlist[[i]] <- CreateSeuratObject(counts, project=samples_name[i],
+                                       min.cells=3, min.features = 200)
+  #给细胞barcode加个前缀，防止合并后barcode重名
+  scRNAlist[[i]] <- RenameCells(scRNAlist[[i]], add.cell.id = samples_name[i])   
+  #计算线粒体基因比例
+  if(T){    
+    scRNAlist[[i]][["percent.mt"]] <- PercentageFeatureSet(scRNAlist[[i]], pattern = "^MT-") 
+  }
+  #计算核糖体基因比例
+  if(T){
+    scRNAlist[[i]][["percent.rb"]] <- PercentageFeatureSet(scRNAlist[[i]], pattern = "^RP[SL]")
+  }
+  #计算红细胞基因比例
+  if(T){
+    scRNAlist[[i]][["percent.hb"]] <- PercentageFeatureSet(scRNAlist[[i]], pattern = "^HB[^(P)]")
+  }
+  
+}
+
+#percent.mt <- PercentageFeatureSet(scRNA, pattern = "^Mt-") 
+
+### 给列表命名并保存数据
+dir.create("Integrate_human")
+setwd("./Integrate_human")
+
+names(scRNAlist) <- samples_name
+#system.time(save(scRNAlist, file = "Integrate/scRNAlist0.Rdata")) 
+#system.time(saveRDS(scRNAlist, file = "scRNAlist0.rds"))
+
+scRNA <- merge(scRNAlist[[1]], scRNAlist[2:length(scRNAlist)])
+
+scRNA$patient<-scRNA@active.ident
+scRNA<-subset(scRNA,idents = c( "C1" ,      "C3"   ,       "C4" , "C5"   ,       "C6"    ,      "C7"   ,       "C8",          "C9"  ,     "C10_Pre"  ,   "C11_Pre"))
+scRNA<-merge(scRNA,scRNA2)
+save(scRNA,file = 'scRNA_orig.Rdata')
+#scRNAlist <- SplitObject(scRNA, split.by = "orig.ident") #分割Seurat对象
+table(scRNA$patient)
+counts <- Read10X(data.dir = "/media/zw/Cjx/HTN/ccRCC/raw/C2")
+#不设置min.cells过滤基因会导致CellCycleScoring报错：
+#Insufficient data values to produce 24 bins.  
+scRNA2 <- CreateSeuratObject(counts, project="C2",
+                                     min.cells=3, min.features = 200)
+#给细胞barcode加个前缀，防止合并后barcode重名
+scRNA2 <- RenameCells(scRNA2, add.cell.id = "C2")   
+#计算线粒体基因比例
+ 
+scRNA2[["percent.mt"]] <- PercentageFeatureSet(scRNA2, pattern = "^MT-") 
+scRNA2[["percent.rb"]] <- PercentageFeatureSet(scRNA2, pattern = "^RP[SL]")
+scRNA2[["percent.hb"]] <- PercentageFeatureSet(scRNA2, pattern = "^HB[^(P)]")
+
+### 绘制质控小提琴图
+# 设置可能用到的主题
+library(ggplot2)
+theme.set2 = theme(axis.title.x=element_blank())
+# 设置绘图元素
+plot.featrures = c("nFeature_RNA", "nCount_RNA", "percent.mt","percent.rb","percent.hb")
+group = "patient"
+# 质控前小提琴图
+plots = list()
+for(i in seq_along(plot.featrures)){
+  plots[[i]] = VlnPlot(scRNA, group.by=group, pt.size = 0,
+                       features = plot.featrures[i]) + theme.set2 + NoLegend()}
+violin <- wrap_plots(plots = plots, nrow=2)    
+dir.create("QC")
+ggsave("QC/vlnplot_before_qc.pdf", plot = violin, width = 9, height = 8)
+
+### 设置质控标准
+minGene=200
+maxGene=5000
+maxUMI=10000
+pctMT=20
+pctrb=5
+
+
+### 数据质控并绘制小提琴图
+scRNA <- subset(scRNA, subset = nCount_RNA < maxUMI & nFeature_RNA > minGene & 
+                  nFeature_RNA < maxGene & percent.mt < pctMT &percent.rb > pctrb)
+plots = list()
+for(i in seq_along(plot.featrures)){
+  plots[[i]] = VlnPlot(scRNA, group.by=group, pt.size = 0,
+                       features = plot.featrures[i]) + theme.set2 + NoLegend()}
+violin <- wrap_plots(plots = plots, nrow=2)     
+ggsave("QC/vlnplot_after_qc.pdf", plot = violin, width = 10, height = 8) 
+table(scRNA$patient)
+
+dim(scRNA)
+## [1] 18147 5762
+
+# Filter MALAT1
+scRNA <- scRNA[!grepl("MALAT1", rownames(scRNA)), ]
+
+# Filter Mitocondrial
+scRNA <- scRNA[!grepl("^MT-", rownames(scRNA)), ]
+
+# Filter Ribossomal gene (optional if that is a problem on your data) scRNA
+# 是否剔除核糖体相关基因需要看你的课题要求来
+scRNA <- scRNA[ ! grepl('^RP[SL]', rownames(scRNA)), ]
+
+# Filter Hemoglobin gene (optional if that is a problem on your data)
+scRNA <- scRNA[!grepl("^HB[^(P)]", rownames(scRNA)), ]
+
+dim(scRNA)
+
+
+save(scRNA,file = "scRNA_data")
+###############DoubletFinder
+#devtools::install_github("chris-mcginnis-ucsf/DoubletFinder")
+library(DoubletFinder)
+#install.packages("DoubletFinder")
+####
+test.seu <- scRNA
+test.seu <-NormalizeData(test.seu, normalization.method = "LogNormalize", scale.factor = 10000)
+test.seu <- FindVariableFeatures(test.seu, selection.method = "vst", nfeatures = 2000)
+test.seu <- ScaleData(test.seu, features = rownames(test.seu))
+test.seu <- RunPCA(test.seu, features = VariableFeatures(test.seu),npcs = 50)
+test.seu <- FindNeighbors(test.seu, dims = 1:20)
+test.seu <- FindClusters(test.seu, resolution = 0.5)
+test.seu <- RunUMAP(test.seu, dims = 1:20)
+test.seu <- RunTSNE(test.seu, dims = 1:20)
+
+sweep.res.list <- paramSweep_v3(test.seu, PCs = 1:10, sct = FALSE)
+for(i in 1:length(sweep.res.list)){
+  if(length(sweep.res.list[[i]]$pANN[is.nan(sweep.res.list[[i]]$pANN)]) != 0){
+    if(i != 1){
+      sweep.res.list[[i]] <- sweep.res.list[[i - 1]]
+    }else{
+      sweep.res.list[[i]] <- sweep.res.list[[i + 1]]
+    }
+  }
+}
+sweep.stats <- summarizeSweep(sweep.res.list, GT = FALSE)
+bcmvn <- find.pK(sweep.stats)
+pk_v <- as.numeric(as.character(bcmvn$pK))
+pk_good <- pk_v[bcmvn$BCmetric==max(bcmvn$BCmetric)]
+nExp_poi <- round(0.1*length(colnames(test.seu)))
+
+test.seu <- doubletFinder_v3(test.seu, PCs = 1:10, pN = 0.25, pK = pk_good, nExp = nExp_poi, reuse.pANN = FALSE, sct = FALSE)
+colnames(test.seu@meta.data)[ncol(test.seu@meta.data)]="DoubletFinder"
+
+test.seu$CB<-test.seu@active.ident
+DF_df <- test.seu@meta.data[,c("CB","DoubletFinder")]
+write.csv(DF_df, file = "DoubletFinder_result.csv")
+write.table(DF_df, file = "DoubletFinder_result.txt", quote = FALSE, sep = '\t', row.names = FALSE, col.names = TRUE)
+DimPlot(test.seu,reduction = "tsne",pt.size = 0.2,group.by = "DoubletFinder")
+DimPlot(test.seu,reduction = "tsne",pt.size = 0.2,label = T)
+table(test.seu$DoubletFinder)
+
+
+DimPlot(test.seu,reduction = "umap",pt.size = 0.2,group.by = "DoubletFinder")
+DimPlot(test.seu,reduction = "umap",pt.size = 0.2,label = T)
+
+levels(test.seu)
+Idents(test.seu)<-test.seu$DoubletFinder
+test.seu_dedouble<-subset(test.seu,idents ='Singlet')
+save(test.seu,file="test.seu.Rdata")
+
+scRNA_dedouble<-subset(scRNA,cells=colnames(test.seu_dedouble))
+save(scRNA_dedouble,file="scRNA_dedouble.Rdata")
+
+table(scRNA_dedouble$patient)
+
+###
+# gc()
+setwd("/media/cjx/Chia_3/cjx/Documents/Jovanny/All_RCC/")
+rm(C7,	C11,	C10,	C13,	C14,	C1,	C2,	C3	,C4	,C5,	C6,	C11P,	C12P,	C10P,	C13PL	,C13P,	C14PL,	C14P,	C15PB,	C8,	C9	,C17B	,C16,	pRCC,	chrR,	chrRN,chrRB,	cdR1,	cdR1P	,cdR1N	,cdR2,	cdR2L,	cdR2B	,C1N,	C2N,	C3N	,C4N	,C5N,	C6N,	C7N,C11N	,C12N,C10N,	C13N,	C14N,scRNA)
+library(Seurat)
+library(dplyr)
+library(cowplot)
+library(harmony)
+
+Idents(scRNA)<-scRNA$raw
+levels(scRNA)
+table(scRNA$raw)
+C7<-subset(scRNA,idents = "BT1T1")
+C11<-subset(scRNA,idents = "BT1T2")
+C10<-subset(scRNA,idents = "BT3T")
+C13<-subset(scRNA,idents = "BT4T")
+C14<-subset(scRNA,idents = "BT5T")
+C11P<-subset(scRNA,idents = "PT1T")
+C10P<-subset(scRNA,idents = "PT3T")
+C13PL<-subset(scRNA,idents = "PT4LM")
+C13P<-subset(scRNA,idents = "PT4T")
+C14PL<-subset(scRNA,idents = "PT5LM")
+C14P<-subset(scRNA,idents = "PT5T")
+C17B<-subset(scRNA,idents = "BM2")
+C16<-subset(scRNA,idents = "BT7T")
+C1<-subset(scRNA,idents = "C1")
+C2<-subset(scRNA,idents = "C2")
+C3<-subset(scRNA,idents = "C3")
+C4<-subset(scRNA,idents = "C4")
+C5<-subset(scRNA,idents = "C5")
+C6<-subset(scRNA,idents = "C6")
+C8<-subset(scRNA,idents = "C8")
+C9<-subset(scRNA,idents = "C9")
+C12P<-subset(scRNA,idents = "PT2T")
+C15PB<-subset(scRNA,idents = "PT6B")
+cdR1<-subset(scRNA,idents = "BT_CDRCC")
+cdR2B<-subset(scRNA,idents = "cdB_results")
+cdR2L<-subset(scRNA,idents = "cdLym_results")
+cdR2<-subset(scRNA,idents = "cdP_results")
+chrRB<-subset(scRNA,idents = "chrB_rawdata")
+chrRN<-subset(scRNA,idents = "chrN_rawdata")
+chrR<-subset(scRNA,idents = "chrP_rawdata")
+C1N<-subset(scRNA,idents = "N1")
+C2N<-subset(scRNA,idents = "N2")
+C3N<-subset(scRNA,idents = "N3")
+C4N<-subset(scRNA,idents = "N4")
+C5N<-subset(scRNA,idents = "N5")
+C6N<-subset(scRNA,idents = "N6")
+C7N<-subset(scRNA,idents = "N7")
+pRCC<-subset(scRNA,idents = "pRCC")
+cdR1P<-subset(scRNA,idents = "PT_CDRCC")
+cdR1N<-subset(scRNA,idents = "PT_CDRCCN")
+C11N<-subset(scRNA,idents = "PT1N")
+C12N<-subset(scRNA,idents = "PT2N")
+C10N<-subset(scRNA,idents = "PT3N")
+C13N<-subset(scRNA,idents = "PT4N")
+C14N<-subset(scRNA,idents = "PT5N")
+
+C7<-ScaleData(object = C7)
+C11<-ScaleData(object = C11)
+C10<-ScaleData(object = C10)
+C13<-ScaleData(object = C13)
+C14<-ScaleData(object = C14)
+C11P<-ScaleData(object = C11P)
+C10P<-ScaleData(object = C10P)
+C13PL<-ScaleData(object = C13PL)
+C13P<-ScaleData(object = C13P)
+C14PL<-ScaleData(object = C14PL)
+C14P<-ScaleData(object = C14P)
+C17B<-ScaleData(object = C17B)
+C16<-ScaleData(object = C16)
+C1<-ScaleData(object = C1)
+C2<-ScaleData(object = C2)
+C3<-ScaleData(object = C3)
+C4<-ScaleData(object = C4)
+C5<-ScaleData(object = C5)
+C6<-ScaleData(object = C6)
+C8<-ScaleData(object = C8)
+C9<-ScaleData(object = C9)
+C12P<-ScaleData(object = C12P)
+C15PB<-ScaleData(object = C15PB)
+cdR1<-ScaleData(object = cdR1)
+cdR2B<-ScaleData(object = cdR2B)
+cdR2L<-ScaleData(object = cdR2L)
+cdR2<-ScaleData(object = cdR2)
+chrRB<-ScaleData(object = chrRB)
+chrRN<-ScaleData(object = chrRN)
+chrR<-ScaleData(object = chrR)
+C1N<-ScaleData(object = C1N)
+C2N<-ScaleData(object = C2N)
+C3N<-ScaleData(object = C3N)
+C4N<-ScaleData(object = C4N)
+C5N<-ScaleData(object = C5N)
+C6N<-ScaleData(object = C6N)
+C7N<-ScaleData(object = C7N)
+pRCC<-ScaleData(object = pRCC)
+cdR1P<-ScaleData(object = cdR1P)
+cdR1N<-ScaleData(object = cdR1N)
+C11N<-ScaleData(object = C11N)
+C12N<-ScaleData(object = C12N)
+C10N<-ScaleData(object = C10N)
+C13N<-ScaleData(object = C13N)
+C14N<-ScaleData(object = C14N)
+
+C7@meta.data$patient <-"C7"
+C11@meta.data$patient <-"C11"
+C10@meta.data$patient <-"C10"
+C13@meta.data$patient <-"C13"
+C14@meta.data$patient <-"C14"
+C1@meta.data$patient <-"C1"
+C2@meta.data$patient <-"C2"
+C3@meta.data$patient <-"C3"
+C4@meta.data$patient <-"C4"
+C5@meta.data$patient <-"C5"
+C6@meta.data$patient <-"C6"
+C11P@meta.data$patient <-"C11P"
+C12P@meta.data$patient <-"C12P"
+C10P@meta.data$patient <-"C10P"
+C13PL@meta.data$patient <-"C13PL"
+C13P@meta.data$patient <-"C13P"
+C14PL@meta.data$patient <-"C14PL"
+C14P@meta.data$patient <-"C14P"
+C15PB@meta.data$patient <-"C15PB"
+C8@meta.data$patient <-"C8"
+C9@meta.data$patient <-"C9"
+C17B@meta.data$patient <-"C17B"
+C16@meta.data$patient <-"C16"
+pRCC@meta.data$patient <-"pRCC"
+chrR@meta.data$patient <-"chrR"
+chrRN@meta.data$patient <-"chrRN"
+chrRB@meta.data$patient <-"chrRB"
+cdR1@meta.data$patient <-"cdR1"
+cdR1P@meta.data$patient <-'cdR1P'
+cdR1N@meta.data$patient <-"cdR1N"
+cdR2@meta.data$patient <-"cdR2"
+cdR2L@meta.data$patient <-"cdR2L"
+cdR2B@meta.data$patient <-"cdR2B"
+C1N@meta.data$patient <-"C1N"
+C2N@meta.data$patient <-"C2N"
+C3N@meta.data$patient <-"C3N"
+C4N@meta.data$patient <-"C4N"
+C5N@meta.data$patient <-"C5N"
+C6N@meta.data$patient <-"C6N"
+C7N@meta.data$patient <-"C7N"
+C11N@meta.data$patient <-"C11N"
+C12N@meta.data$patient <-"C12N"
+C10N@meta.data$patient <-"C10N"
+C13N@meta.data$patient <-"C13N"
+C14N@meta.data$patient <-"C14N"
+
+allcell.list<- list(C7,	C11,	C10,	C13,	C14,	C1,	C2,	C3	,C4	,C5,	C6,	C11P,	C12P,	C10P,	C13PL	,C13P,	C14PL,	C14P,	C15PB,	C8,	C9	,C17B	,C16,	pRCC,	chrR,	chrRN,chrRB,	cdR1,	cdR1P	,cdR1N	,cdR2,	cdR2L,	cdR2B	,C1N,	C2N,	C3N	,C4N	,C5N,	C6N,	C7N,C11N	,C12N,C10N,	C13N,	C14N)
+
+for (i in 1:length(x = allcell.list)) {
+  allcell.list[[i]] <- FindVariableFeatures(object = allcell.list[[i]],selection.method = "vst", nfeatures =2000, verbose = FALSE)
+}
+
+allcell.anchors <- FindIntegrationAnchors(object.list = allcell.list, dims = 1:30,k.anchor = 5,k.filter = 30)
+allcell.integrated <- IntegrateData(anchorset = allcell.anchors, dims = 1:30)
+
+DefaultAssay(allcell.integrated) <- "RNA"
+allcell.integrated <- NormalizeData(allcell.integrated)
+
+allcell.integrated <- ScaleData(allcell.integrated)
+allcell.integrated <- FindVariableFeatures(allcell.integrated, selection.method = "vst", nfeatures =2000)
+
+allcell.integrated <- RunPCA(allcell.integrated,features=VariableFeatures(object = allcell.integrated),npcs = 30)
+
+allcell.integrated <- allcell.integrated %>% RunHarmony("patient",plot_convergence=T)
+
+harmony_embeddings <- Embeddings(allcell.integrated,"harmony")
+
+allcell_harmony <- allcell.integrated %>% RunUMAP(reduction="harmony",dims=1:30) %>%
+  FindNeighbors(reduction="harmony",dims=1:30) %>%
+  FindClusters(resolution=5) %>%
+  identity()
+
+allcell_harmony<-FindClusters(allcell_harmony,resolution=5)
+
+FeaturePlot(allcell_harmony,features = "MKI67")
+
+save(allcell.anchors,file = "feature2k_dim30.anchor.Rdata")
+save(allcell.integrated,file = "feature2k_dim30.allcell.integrated.Rdata")
+save(allcell_harmony,file = "allcell_harmony.Rdata")
+rm(allcell.list,allcell.anchors,allcell.integrated)
+gc()
+
+library(future)
+plan("multiprocess",workers=10)
+plan()
+allcell_harmony.markers.all <- Seurat::FindAllMarkers(allcell_harmony,
+                                                      only.pos = TRUE,
+                                                      min.pct = 0.25,
+                                                      logfc.threshold = 0.25)
+
+
+
+
+
+DimPlot(object = allcell_harmony, reduction = "umap")
+table(allcell_harmony)
+Idents(allcell_harmony)<-"patient"
+levels(allcell_harmony)
+allcell_harmony<-RenameIdents(allcell_harmony, "C1"="Naive"  ,   "C2" ="Naive" , "C3"="Naive"  ,  "C4" ="Naive"   ,   "C5"="Naive"  ,  "C6" ="Naive"  ,  "C7" ="Naive"  , "C8" ="Naive"  ,    "C9"="Naive"    ,        "C10_Post"="Response",    "C10_Pre"="Response_Naive"  ,    "C11_Post"="Response" ,   "C11_Pre" ="Response_Naive"  ,    "C12_Post"="Response",   "C13_Post"="Resistant",   "C13_Post_LM"="Resistant" , "C13_Pre" ="Resistant_Naive"  ,    "C14_Post"="Resistant" ,   "C14_Post_LM" ="Resistant","C14_Pre"="Resistant_Naive"   ,    "C15_Post"="Resistant")  
+allcell_harmony$Group<-allcell_harmony@active.ident
+DimPlot(object = allcell_harmony, reduction = "umap",label = T)+ggsci::scale_color_nejm()
+
+FeaturePlot(allcell_harmony,features = c("NNMT","NDUFA4L2","ANGPTL4","HILPDA","SAA1","CA9",
+                                         "MIOX","GATM","MT1G","ALDOB",
+                                         "PVALB",	"TMEM213",
+                                         "ATP6V0D2",	"CLCNKB",	"SLC26A4",	"SLC4A1"))
+FeaturePlot(allcell_harmony,features = c("PLVAP","AQP1","PTPRB","CD34"))
+FeaturePlot(allcell_harmony,features = c("ACTA2","THY1","PDGFRB","COL1A1"))
+FeaturePlot(allcell_harmony,features = c("IGHM","CD19","MZB1"))
+FeaturePlot(allcell_harmony,features = c("CD3D","CD3E"))
+FeaturePlot(allcell_harmony,features = c("FCGR3A","LYZ","C1QA"))
+
+levels(allcell_harmony)
+Idents(allcell_harmony)<-allcell_harmony$seurat_clusters
+allcell_harmony<-RenameIdents(allcell_harmony,"0"="Malignant",  "1"="Malignant",  "2"="Malignant",  "3"="Malignant",  "4"="Malignant",  "5"="NK&T",  "6"="Malignant",  "7"="Endothelial",  "8"="Endothelial",  "9"="Malignant",  "10"="Endothelial", "11"="Myeloid", "12"="NK&T", "13"="Myeloid", "14"="NK&T", "15"="Myeloid", "16"="Myeloid", "17" ="Malignant","18"="NK&T", "19"="NK&T", "20"="NK&T", "21"="Endothelial", "22"="NK&T", "23"="Malignant", "24"="NK&T", "25"="Malignant", "26"="B&Plasma", "27"="Fibroblast", "28" ="Malignant","29"="Endothelial", "30"="Myeloid", "31"="Endothelial", "32"="Fibroblast", "33"="Myeloid", "34"="Myeloid", "35"="Malignant", "36"="Myeloid", "37"="Endothelial", "38"="Fibroblast", "39"="Malignant", "40"="Malignant", "41"="Malignant", "42"="NK&T", "43"="Endothelial", "44"="Malignant", "45"="Malignant", "46"="Malignant", "47"="Malignant", "48"="B&Plasma", "49"="Endothelial", "50"="NK&T", "51"="Proximal_tubule", "52"="Myeloid", "53"="Malignant", "54"="NK&T", "55"="Malignant", "56"="NK&T", "57"="Malignant", "58"="Endothelial", "59"="Distal&Collecting", "60"="Malignant", "61"="Malignant", "62"="Myeloid", "63"="Endothelial", "64"="Malignant", "65"="Myeloid", "66"="NK&T", "67"="Endothelial", "68"="Myeloid", "69"="NK&T", "70"="Endothelial", "71"="Distal&Collecting", "72"="NK&T", "73"="Malignant", "74"="Proximal_tubule", "75"="Malignant", "76"="Malignant", "77"="Myeloid", "78"="Distal&Collecting", "79"="Endothelial", "80"="Malignant", "81"="Fibroblast", "82"="NK&T", "83"="Myeloid", "84"="Myeloid", "85"="Endothelial", "86"="NK&T", "87"="Myeloid", "88"="NK&T", "89"="Endothelial", "90"="Malignant", "91"="Fibroblast", "92"="Distal&Collecting", "93"="NK&T", "94"="Distal&Collecting", "95"="Endothelial", "96"="Fibroblast", "97"="Myeloid", "98"="B&Plasma", "99"="Endothelial")
+allcell_harmony$major<-allcell_harmony@active.ident
+
+p3<-DimPlot(object = allcell_harmony, reduction = "umap",group.by = "Group")+ggsci::scale_color_npg()
+plot_grid(p1,p2)
+
+save(allcell_harmony,file = "allcell_harmony_2k_30.Rdata")
+save(allcell.anchors,file = "allcell.anchors.Rdata")
+
+library(ClusterGVis)
+library(org.Hs.eg.db)
+
+Idents(allcell_harmony)<-"major"
+allcell_harmony.markers.all <- Seurat::FindAllMarkers(allcell_harmony,
+                                                      only.pos = TRUE,
+                                                      min.pct = 0.25,
+                                                      logfc.threshold = 0.25)
+
+# get top 10 genes
+allcell_harmony.markers <- allcell_harmony.markers.all %>%
+  dplyr::group_by(cluster) %>%
+  dplyr::top_n(n = 10, wt = avg_log2FC)
+library(scRNAtoolVis)
+levels(allcell_harmony)
+
+AverageHeatmap(object = allcell_harmony,
+               markerGene = c("CLU" ,     "CRYAB" ,   "NNMT" ,    "RARRES2" , "NDUFA4L2" ,"MMP7", "ANGPTL4" , "CD24","FABP7" ,   "CCL2",##Mali
+                              "ALDOB",    "MT1G" ,    "FABP1" ,   "MT1H" ,   "GPX3",     "MIOX",     "GATM" ,    "ALB" ,     "SUCLG1" ,  "HPD" ,
+                              "SPINK1" ,  "TMEM213" ,"RHCG" ,    "ATP6V1G3", "DEFB1",    "SLC26A7",  "UMOD",     "ATP6V0D2", "SLC4A1",   "MAL"  ,
+                              "ESM1" ,    "PLVAP",    "ENPP2",    "FLT1" , "VWF"  ,    "SPARCL1",  "EMCN",     "SLC9A3R2", "RNASE1",   "INSR",##Endo
+                              "RGS5",     "ACTA2" ,   "TAGLN",    "COL1A1",   "TPM2",     "COL1A2",  "BGN",      "MYL9",     "MGP" ,     "COL3A1" ,##fibro
+                              "IL1B" ,    "LYZ",   "CXCL8" ,   "C1QB",     "C1QA" ,    "APOC1",    "CCL3",     "APOE" ,    "C1QC" ,    "AIF1" ,##mye
+                              "CCL5",     "GNLY"  ,   "NKG7" ,    "CST7"  ,   "GZMA" ,    "KLRB1"  , "CD3D" ,    "CD69" ,    "TRBC2" ,   "GZMB",##Nk T
+                              "IGHG1" ,   "IGLC3",    "IGLC2" ,   "IGHG4"  ,  "IGKC" ,    "IGHA1",    "IGHG3",    "IGHM"  ,   "JCHAIN" ,  "CD79A"  ),
+               showRowNames = T,
+               #markerGene =allcell_harmony.markers$gene,
+               cluster.order = c("Malignant" , "Proximal_tubule" ,  "Distal&Collecting" ,  "Endothelial" , "Fibroblast"  ,     "Myeloid"  ,   "NK&T"  ,  "B&Plasma"  ),
+               fontsize = 8,
+               row_names_side = "left" ,
+               border = T)
+
+a<-table(allcell_harmony$patient,allcell_harmony$major)
+
+FeaturePlot(allcell_harmony,features = c("TNXB","COL4A5","ITGA8","TNFRSF11B","SERPINF1","RAMP2","SOCS3","EPAS1","TIMP3"))
+
+cd_features <- list(c("TNXB","COL4A5","ITGA8","TNFRSF11B","SERPINF1","RAMP2","SOCS3","EPAS1","TIMP3"))
+allcell_harmony <- AddModuleScore(
+  object = allcell_harmony,
+  features = cd_features,
+  ctrl = 5,
+  name = 'HTN_Module')
+
+merged_df <- data.frame(allcell_harmony@reductions$umap@cell.embeddings, Addmodulescore = allcell_harmony$HTN_Module1)
+ggplot(merged_df, aes(x = UMAP_1, y = UMAP_2, color = Addmodulescore)) +
+  geom_point() +
+  scale_color_gradient2(high="red",mid= "grey",low ="darkblue",midpoint =0)+ theme_bw()
+
+Idents(allcell_harmony)<-"major"
+levels(allcell_harmony)
+allcell_harmony<-RenameIdents(allcell_harmony,"Malignant"="Epithelial", "Distal&Collecting"="Epithelial", "Proximal_tubule"="Epithelial")
+allcell_harmony$cellty<-allcell_harmony@active.ident
+library(dplyr)
+library(ggplot2)
+cell_info <- data.frame(
+  cell = Idents(allcell_harmony),          # 单元格名称/编号
+  patient = allcell_harmony@meta.data$patient) 
+cell_info <- data.frame(allcell_harmony@meta.data)
+
+factor_cols <- sapply(cell_info, is.factor)
+cell_info[factor_cols] <- lapply(cell_info[factor_cols], as.character)
+merged_data <- left_join(x = Idents(allcell_harmony) ,
+                         y = cell_info,
+                         by = c("orig.ident" = "cell"))
+str(Idents(allcell_harmony))
+str(cell_info)
+
+df_counts1 <- cell_info %>%
+  group_by(patient, major) %>%
+  summarize(n_cells = n()) %>%
+  #group(patient) %>%
+  mutate(percent = n_cells / sum(n_cells))
+
+df_counts1<-df_counts1[,c(1,2,4)]
+
+
+levels
+library(RColorBrewer)
+library(reshape2)
+ggplot(df_counts, aes(x = patient, y = percent, fill = major)) +
+  geom_bar(stat = "identity", position = "fill") +
+  scale_x_discrete(limits=c("C1","C2", "C3","C4","C5","C6","C7","C8","C9", "C10_Post","C10_Pre","C11_Post", "C11_Pre","C12_Post","C13_Post","C13_Post_LM","C13_Pre", "C14_Post","C14_Post_LM", "C14_Pre","C15_Post"))+
+  theme_bw() + theme(legend.position = "top",panel.grid.major=element_line(colour=NA),
+                     panel.background = element_rect(fill = "transparent",colour = NA),
+                     plot.background = element_rect(fill = "transparent",colour = NA),
+                     panel.grid.minor = element_blank(),
+                     panel.border = element_blank(),
+                     axis.line.x.bottom = element_line(colour = 'NA',size = 1),
+                     axis.line.y.left = element_line(colour = 'NA',size = 1),
+                     plot.title = element_text(size = rel(1.5), face = "bold"),
+                     axis.text.x = element_text(angle = 60, hjust = 1)
+  ) 
+
+
+enrich <- enrichCluster(object = st.data,
+                        OrgDb = org.Hs.eg.db,
+                        type = "BP",
+                        organism = "hsa",
+                        pvalueCutoff = 0.05,
+                        topn = 100,
+                        seed = 5201314)
+write.csv(enrich,file = "enrich.csv")
+enrich1<-read.csv("enrich.se.csv",row.names = 1)
+markGenes = unique(allcell_harmony.markers$gene)[sample(1:length(unique(allcell_harmony.markers$gene)),40,
+                                                        replace = F)]
+
+# line plot
+visCluster(object = st.data,
+           plot.type = "line")
+pdf('sc1.pdf',height = 10,width = 6,onefile = F)
+visCluster(object = st.data,
+           plot.type = "heatmap",
+           column_names_rot = 45,
+           markGenes = markGenes,
+           cluster.order = c(1:9))
+dev.off()
+
+BiocManager::install("ComplexHeatmap")
+pdf('sc2.pdf',height = 10,width = 14,onefile = F)
+visCluster(object = st.data,
+           plot.type = "both",
+           column_names_rot = 30,
+           show_row_dend = F,
+           markGenes = markGenes,
+           #show_column_names = F,
+           markGenes.side = "left",
+           annoTerm.data = enrich1,
+           line.side = "left",
+           cluster.order = c(1:6),
+           go.col = rep(jjAnno::useMyCol("stallion",n = 6),each = 5),
+           add.bar = T)
+dev.off()
+
+###all
+allcell_harmony.markers1 <- allcell_harmony.markers.all %>%
+  dplyr::group_by(cluster) %>%
+  dplyr::top_n(n = 10, wt = avg_log2FC)
+
+# retain duplicate diff gene in multiple clusters
+st.data <- prepareDataFromscRNA(object = allcell_harmony,
+                                diffData = allcell_harmony.markers1,
+                                showAverage = FALSE)
+pdf('sc4.pdf',height = 12,width = 8,onefile = F)
+visCluster(object = st.data,
+           plot.type = "heatmap",
+           markGenes = unique(allcell_harmony.markers1$gene),
+           column_title_rot = 45,
+           cluster.order = 1:9,
+           show_column_names = F)
+dev.off()
+
+setwd("/media/zw/Cjx/HTN/Integrate_human/Integrate_human")
+pdf('sc5.pdf',height = 12,width =20,onefile = F)
+visCluster(object = st.data,
+           plot.type = "both",
+           column_names_rot = 30,
+           show_column_names = F,
+           show_row_dend = F,
+           #show_row_names = F,
+           markGenes = markGenes,
+           markGenes.side = "left",
+           annoTerm.data = enrich,
+           line.side = "left",
+           cluster.order = c(1:6),
+           go.col = rep(jjAnno::useMyCol("stallion",n = 6),each = 5),
+           add.bar = T)
+dev.off()
+
+Idents(allcell_harmony)<-"Group"
+DEG<-FindAllMarkers(allcell_harmony)
+
+library(ggrepel)
+library(tidyverse)
+library(dplyr)
+DEG = DEG %>% distinct(gene,.keep_all = T)%>% as.tibble()  %>%
+  mutate(Difference = pct.1 - pct.2) 
+rownames(DEG)<-DEG$gene  
+
+
+log2FC = 1
+padj = 0.05 
+
+DEG$threshold="ns";
+DEG[which(DEG$avg_log2FC  > log2FC & DEG$p_val_adj <padj),]$threshold="up";
+DEG[which(DEG$avg_log2FC  < (-log2FC) & DEG$p_val_adj < padj),]$threshold="down";
+DEG$threshold=factor(DEG$threshold, levels=c('down','ns','up'))
+ggplot(DEG, aes(x=Difference, y=avg_log2FC, color = threshold)) +
+  geom_point(size=0.5) + 
+  scale_color_manual(values=c( "blue","grey","red") ) + 
+  geom_label_repel(data=subset(DEG, avg_log2FC >= 1 & Difference >= 0.2 & p_val_adj <= 0.05), 
+                   aes(label=gene),  #添加label
+                   color="black", #设置label中标签的颜色
+                   segment.colour = "black",#设置label框的颜色
+                   label.padding = 0.1, 
+                   #max.overlaps = 200,
+                   segment.size = 0.3,  #框的大小
+                   size=3)+
+  geom_label_repel(data=subset(DEG, avg_log2FC <= -1 & Difference <= -0.2 & p_val_adj <= 0.05), 
+                   aes(label=gene), label.padding = 0.1, 
+                   color="black",
+                   segment.colour = "black",
+                   segment.size = 0.3, size=3)+
+  geom_vline(xintercept = 0.0,linetype=2)+
+  geom_hline(yintercept = 0,linetype=2)+
+  theme_classic()
+
+write.csv(DEG,file = "DEG.csv")
+
+#############
+library(SCORPIUS)
+setwd("/media/zw/Cjx/All_RCC/FIbro/new/")
+library(Seurat)
+library(monocle)
+library(dplyr)
+library(patchwork)
+
+####step1 构建cds----
+#monocle构建cds需要3个矩阵：expr.matrix、pd、featuredata
+#表达矩阵信息、基因信息和表型信息
+#提取表型信息--细胞信息(建议载入细胞的聚类或者细胞类型鉴定信息，实验条件等信息)
+fibro<-subset(Fibro_harmony1,idents = c("CP_CAF","MKI67_CAF","Fibro1"))
+expression <- t(as.matrix(fibro@assays$RNA@data))
+group_name <- fibro@active.ident
+
+space <- reduce_dimensionality(expression, "spearman")
+draw_trajectory_plot(space, group_name, contour = TRUE)
+
+traj <- infer_trajectory(space)
+draw_trajectory_plot(space, group_name, traj$path, contour = TRUE)
+
+# warning: setting num_permutations to 10 requires a long time (~30min) to run!
+# set it to 0 and define a manual cutoff for the genes (e.g. top 200) for a much shorter execution time.
+gimp <- gene_importances(
+  expression, 
+  traj$time, 
+  num_permutations = 10, 
+  num_threads = 8, 
+  ntree = 10000,
+  ntree_perm = 1000
+) 
+gimp$qvalue <- p.adjust(gimp$pvalue, "BH", length(gimp$pvalue))
+gene_sel <- gimp$gene[gimp$qvalue < .05]
+expr_sel <- scale_quantile(expression[,gene_sel])
+
+# Draw a time series heatmap
+time <- traj$time
+draw_trajectory_heatmap(expr_sel, time)
+
+## Also show the progression groupings
+draw_trajectory_heatmap(expr_sel, time, 
+                        progression_group=group_name)
+
+## 换一个配色
+table(group_name)
+draw_trajectory_heatmap(
+  expr_sel, time, progression_group=group_name,
+  progression_group_palette = setNames(RColorBrewer::brewer.pal(3, "Set2"),
+                                       levels(group_name))
+)
+
+## 基因也可以分组
+modules <- extract_modules(scale_quantile(expr_sel))
+draw_trajectory_heatmap(expr_sel, time,
+                        progression_group=group_name, modules=modules)
+
+
+
+
+
+
+
+
+
+
